@@ -53,6 +53,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             _flusher = new StreamSafePipeFlusher(pipeWriter, timeoutControl);
         }
 
+        public bool IsCompleted => _completed;
+
         public Task WriteDataAsync(ReadOnlySpan<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (cancellationToken.IsCancellationRequested)

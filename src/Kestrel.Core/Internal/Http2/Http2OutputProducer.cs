@@ -46,6 +46,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             _dataWriteProcessingTask = ProcessDataWrites();
         }
 
+        public bool IsCompleted => _completed;
+
         public void Dispose()
         {
             lock (_dataWriterLock)
@@ -73,7 +75,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
 
         public void Abort(ConnectionAbortedException abortReason)
         {
-            // TODO: RST_STREAM?
             Dispose();
         }
 
@@ -128,13 +129,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
         {
             lock (_dataWriterLock)
             {
+                // The HPACK header compressor is stateful, if we compress headers for an aborted stream we must send them.
+                // Optimize for not compressing or sending them.
                 if (_completed)
                 {
                     return;
                 }
 
-                // The HPACK header compressor is stateful, if we compress headers for an aborted stream we must send them.
-                // Optimize for not compressing or sending them.
                 _frameWriter.WriteResponseHeaders(_streamId, statusCode, responseHeaders);
             }
         }

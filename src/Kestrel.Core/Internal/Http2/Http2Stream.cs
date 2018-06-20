@@ -5,6 +5,7 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.IO.Pipelines;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
@@ -17,6 +18,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
     {
         private readonly Http2StreamContext _context;
         private readonly Http2StreamOutputFlowControl _outputFlowControl;
+        private int _requestAborted;
 
         public Http2Stream(Http2StreamContext context)
             : base(context)
@@ -144,17 +146,51 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             }
         }
 
+        public bool TryUpdateOutputWindow(int bytes)
+        {
+            return _context.FrameWriter.TryUpdateStreamWindow(_outputFlowControl, bytes);
+        }
+
         public override void Abort(ConnectionAbortedException abortReason)
         {
+            if (Interlocked.Exchange(ref _requestAborted, 1) != 0)
+            {
+                return;
+            }
+
             base.Abort(abortReason);
 
             // Unblock the request body.
             RequestBodyPipe.Writer.Complete(new IOException(CoreStrings.Http2StreamAborted, abortReason));
         }
 
-        public bool TryUpdateOutputWindow(int bytes)
+        protected override void ApplicationAbort()
         {
-            return _context.FrameWriter.TryUpdateStreamWindow(_outputFlowControl, bytes);
+            Log.ApplicationAbortedConnection(ConnectionId, TraceIdentifier);
+            var abortReason = new ConnectionAbortedException(CoreStrings.ConnectionAbortedByApplication);
+            AbortAndReset(abortReason, Http2ErrorCode.CANCEL);
+        }
+
+        public void AbortAndReset(ConnectionAbortedException abortReason, Http2ErrorCode error)
+        {
+            if (Interlocked.Exchange(ref _requestAborted, 1) != 0)
+            {
+                return;
+            }
+
+            var outputCompleted = Output.IsCompleted;
+
+            base.Abort(abortReason);
+
+            // Unblock the request body.
+            RequestBodyPipe.Writer.Complete(new IOException(CoreStrings.Http2StreamAborted, abortReason));
+
+            // If this was an app initiated Abort then we need to inform the client.
+            // Only reset if the connection is open or in a half closed state.
+            if (!EndStreamReceived || !outputCompleted)
+            {
+                _context.FrameWriter.WriteRstStreamAsync(StreamId, error).GetAwaiter().GetResult();
+            }
         }
     }
 }
